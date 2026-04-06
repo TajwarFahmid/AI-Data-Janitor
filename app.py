@@ -40,64 +40,46 @@ if uploaded_file:
             # 0. Global Duplicate Removal
             cleaned_df = cleaned_df.drop_duplicates()
             
+            # Define a more aggressive list of "Bad Data" strings
+            fake_nulls = ['nan', 'Nan', 'NAN', 'None', 'none', 'NULL', 'null', '?', 'N/A', 'n/a', '', 'ERROR', 'UNKNOWN']
+            
             for col in cleaned_df.columns:
-                # --- RULE 1: CATEGORICAL/TEXT COLUMNS (Objects) ---
-                if cleaned_df[col].dtype == 'object':
-                    # A. Standardize "Fake" Nulls
-                    fake_nulls = ['nan', 'Nan', 'NAN', 'None', 'none', 'NULL', 'null', '?', 'N/A', 'n/a', '']
-                    cleaned_df[col] = cleaned_df[col].astype(str).str.strip().replace(fake_nulls, pd.NA)
+                # --- STEP A: STRIP & UNIFY FAKE NULLS ---
+                # This ensures "  ERROR  " becomes a real Null (NaN)
+                cleaned_df[col] = cleaned_df[col].astype(str).str.strip().replace(fake_nulls, pd.NA)
+
+                # --- STEP B: ATTEMPT NUMERIC CONVERSION ---
+                # We try to turn the column into numbers. If it works for >50% of the data, 
+                # we treat it as a numeric column.
+                converted_numeric = pd.to_numeric(cleaned_df[col], errors='coerce')
+                
+                if converted_numeric.notnull().sum() > (len(cleaned_df) * 0.5):
+                    # --- RULE 1: NUMERIC LOGIC ---
+                    cleaned_df[col] = converted_numeric
+                    median_val = cleaned_df[col].median()
+                    cleaned_df[col] = cleaned_df[col].fillna(median_val)
                     
-                    # B. Standardize Casing (Title Case)
+                    # Outlier Capping (IQR)
+                    q1, q3 = cleaned_df[col].quantile(0.25), cleaned_df[col].quantile(0.75)
+                    iqr = q3 - q1
+                    cleaned_df[col] = cleaned_df[col].clip(lower=q1 - 1.5*iqr, upper=q3 + 1.5*iqr)
+                
+                elif 'date' in col.lower() or 'time' in col.lower():
+                    # --- RULE 2: DATETIME LOGIC ---
+                    cleaned_df[col] = pd.to_datetime(cleaned_df[col], errors='coerce')
+                    # Fill missing dates with the most common date
+                    if cleaned_df[col].isnull().any():
+                        cleaned_df[col] = cleaned_df[col].fillna(cleaned_df[col].mode()[0])
+                
+                else:
+                    # --- RULE 3: CATEGORICAL/TEXT LOGIC ---
                     cleaned_df[col] = cleaned_df[col].str.title()
-                    
-                    # C. Mode Imputation (Fill with most frequent)
                     if cleaned_df[col].isnull().any():
                         valid_modes = cleaned_df[col].dropna().mode()
                         mode_val = valid_modes[0] if not valid_modes.empty else "Unknown"
                         cleaned_df[col] = cleaned_df[col].fillna(mode_val)
 
-                # --- RULE 2: NUMERIC COLUMNS (Int/Float) ---
-                elif pd.api.types.is_numeric_dtype(cleaned_df[col]):
-                    # A. Median Imputation
-                    median_val = cleaned_df[col].median()
-                    cleaned_df[col] = cleaned_df[col].fillna(median_val)
-                    
-                    # B. IQR Outlier Capping (Statistical Fence)
-                    q1 = cleaned_df[col].quantile(0.25)
-                    q3 = cleaned_df[col].quantile(0.75)
-                    iqr = q3 - q1
-                    cleaned_df[col] = cleaned_df[col].clip(lower=q1 - 1.5*iqr, upper=q3 + 1.5*iqr)
-
-                # --- RULE 3: DATETIME COLUMNS ---
-                # Check if the column name implies date OR if it's already a datetime type
-                if 'date' in col.lower() or 'time' in col.lower() or pd.api.types.is_datetime64_any_dtype(cleaned_df[col]):
-                    cleaned_df[col] = pd.to_datetime(cleaned_df[col], errors='coerce')
-
             st.success("✅ Universal Pipeline Complete!")
-
-            # --- FINAL VALIDATION REPORT ---
-            st.divider()
-            st.write("### 📋 Final Validation Report")
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Rows Processed", f"{len(df)}", f"{len(cleaned_df) - len(df)} Dups Removed", delta_color="inverse")
-            m2.metric("Nulls Repaired", f"{df.isnull().sum().sum()}", f"-{df.isnull().sum().sum() - cleaned_df.isnull().sum().sum()} Fixed")
-            m3.metric("Data Status", "Ready for AI", "100% Quality")
-
-            st.write("#### 🔄 Side-by-Side Comparison")
-            stat_col1, stat_col2 = st.columns(2)
-            
-            with stat_col1:
-                st.error("❌ Original Data (Head)")
-                st.dataframe(df.head(10))
-                st.write("**Nulls per Column:**")
-                st.write(df.isnull().sum())
-                
-            with stat_col2:
-                st.success("✨ Cleaned Data (Head)")
-                st.dataframe(cleaned_df.head(10))
-                st.write("**Nulls per Column:**")
-                st.write(cleaned_df.isnull().sum())
 
             # Download link
             csv = cleaned_df.to_csv(index=False).encode('utf-8')
