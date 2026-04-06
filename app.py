@@ -3,8 +3,7 @@ import pandas as pd
 from groq import Groq
 import os
 
-# Streamlit Cloud handles secrets differently than local .env files
-# This line looks for the key you put in the "Secrets" box during deployment
+# 1. Setup - MUST BE AT THE TOP
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -12,7 +11,8 @@ st.set_page_config(page_title="AI Data Janitor", layout="wide")
 st.title("🧹 AI Data Janitor")
 st.markdown("### Senior Capstone-Style Data Quality Engine")
 
-uploaded_file = st.file_uploader("Upload a messy CSV (e.g., messy_data.csv)", type="csv")
+# 2. File Uploader
+uploaded_file = st.file_uploader("Upload a messy CSV", type="csv")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
@@ -29,27 +29,46 @@ if uploaded_file:
             st.write(df.isnull().sum())
 
     with tab2:
+        # --- THIS IS THE PART WE UPDATED ---
         if st.button("✨ Run AI Clean & Repair"):
             cleaned_df = df.copy()
             
-            # --- THE "JANITOR" LOGIC ---
-            # 1. Clean Names
-            if 'Full_Name' in cleaned_df.columns:
-                cleaned_df['Full_Name'] = cleaned_df['Full_Name'].str.strip().str.title()
+            # --- THE UNIVERSAL JANITOR LOGIC ---
+            for col in cleaned_df.columns:
+                # 1. Dynamic Text Cleaning
+                if cleaned_df[col].dtype == 'object' and ('name' in col.lower() or 'text' in col.lower()):
+                    cleaned_df[col] = cleaned_df[col].astype(str).str.strip().str.title()
+                
+                # 2. Dynamic Number Cleaning (IQR Method)
+                if pd.api.types.is_numeric_dtype(cleaned_df[col]):
+                    median_val = cleaned_df[col].median()
+                    cleaned_df[col] = cleaned_df[col].fillna(median_val)
+                    
+                    q1 = cleaned_df[col].quantile(0.25)
+                    q3 = cleaned_df[col].quantile(0.75)
+                    iqr = q3 - q1
+                    lower_bound = q1 - 1.5 * iqr
+                    upper_bound = q3 + 1.5 * iqr
+                    cleaned_df[col] = cleaned_df[col].clip(lower=lower_bound, upper=upper_bound)
+
+                # 3. Dynamic Date Cleaning
+                if 'date' in col.lower() or 'time' in col.lower():
+                    cleaned_df[col] = pd.to_datetime(cleaned_df[col], errors='coerce')
+
+            st.success("✅ Universal Cleaning & Repair Complete!")
             
-            # 2. Fix Ages & Outliers (Math/Stats Logic)
-            if 'User_Age' in cleaned_df.columns:
-                cleaned_df['User_Age'] = pd.to_numeric(cleaned_df['User_Age'], errors='coerce')
-                median_age = cleaned_df['User_Age'].median()
-                cleaned_df.loc[cleaned_df['User_Age'] > 100, 'User_Age'] = median_age
-                cleaned_df['User_Age'] = cleaned_df['User_Age'].fillna(median_age)
+            # --- SIDE-BY-SIDE COMPARISON ---
+            col_raw, col_clean = st.columns(2)
+            with col_raw:
+                st.error("❌ Original 'Dirty' Data")
+                st.dataframe(df.head(10))
+            with col_clean:
+                st.success("✨ AI-Cleaned 'Gold' Data")
+                st.dataframe(cleaned_df.head(10))
 
-            # 3. Standardize Dates
-            if 'Join_Date' in cleaned_df.columns:
-                cleaned_df['Join_Date'] = pd.to_datetime(cleaned_df['Join_Date'], errors='coerce')
-
-            st.success("Data Cleaned Successfully!")
-            st.dataframe(cleaned_df)
+            # Metric: Show how many "Fixes" were made
+            total_nulls_fixed = df.isnull().sum().sum() - cleaned_df.isnull().sum().sum()
+            st.metric("Data Health Improvement", f"+{total_nulls_fixed} Nulls Repaired")
             
             # Download link
             csv = cleaned_df.to_csv(index=False).encode('utf-8')
